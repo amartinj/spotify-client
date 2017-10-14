@@ -1,11 +1,13 @@
-require 'excon'
 require 'json'
 
 require File.dirname(__FILE__) + '/spotify/utils'
 require File.dirname(__FILE__) + '/spotify/exceptions'
+require File.dirname(__FILE__) + '/spotify_network'
 
 module Spotify
   class Client
+    include Spotify::Network
+
     BASE_URI = 'https://api.spotify.com'.freeze
 
     attr_accessor :access_token
@@ -17,12 +19,7 @@ module Spotify
     #
     # @param [Hash] configuration.
     def initialize(config = {})
-      @access_token  = config[:access_token]
-      @raise_errors  = config[:raise_errors] || false
-      @retries       = config[:retries] || 0
-      @read_timeout  = config[:read_timeout] || 10
-      @write_timeout = config[:write_timeout] || 10
-      @connection    = Excon.new(BASE_URI, persistent: config[:persistent] || false)
+      initialize_connections(config, BASE_URI)
     end
 
     def inspect
@@ -89,7 +86,7 @@ module Spotify
     # Requires playlist-modify-public for a public playlist.
     # Requires playlist-modify-private for a private playlist.
     def create_user_playlist(user_id, name, is_public = true)
-      run(:post, "/v1/users/#{user_id}/playlists", [201], JSON.dump(name: name, public: is_public), false)
+      run(:post, "/v1/users/#{user_id}/playlists", [201], JSON.dump(name: name, public: is_public), nil, false)
     end
 
     # Add an Array of track uris to an existing playlist.
@@ -103,7 +100,7 @@ module Spotify
       if position
         params.merge!(position: position)
       end
-      run(:post, "/v1/users/#{user_id}/playlists/#{playlist_id}/tracks", [201], JSON.dump(params), false)
+      run(:post, "/v1/users/#{user_id}/playlists/#{playlist_id}/tracks", [201], JSON.dump(params), nil, false)
     end
 
     # Removes tracks from playlist
@@ -193,64 +190,6 @@ module Spotify
     # client.follow_playlist('lukebryan', '0obRj9nNySESpFelMCLSya')
     def follow_playlist(user_id, playlist_id, is_public = true)
       run(:put, "/v1/users/#{user_id}/playlists/#{playlist_id}/followers", [200], { public: is_public })
-    end
-
-    protected
-
-    def run(verb, path, expected_status_codes, params = {}, idempotent = true)
-      run!(verb, path, expected_status_codes, params, idempotent)
-    rescue Error => e
-      if @raise_errors
-        raise e
-      else
-        false
-      end
-    end
-
-    def run!(verb, path, expected_status_codes, params_or_body = nil, idempotent = true)
-      packet = {
-        idempotent: idempotent,
-        expects: expected_status_codes,
-        method: verb,
-        path: path,
-        read_timeout: @read_timeout,
-        write_timeout: @write_timeout,
-        retry_limit: @retries,
-        headers: {
-          'Content-Type' => 'application/json',
-          'User-Agent'   => 'Spotify Ruby Client'
-        }
-      }
-      if params_or_body.is_a?(Hash)
-        packet.merge!(query: params_or_body)
-      else
-        packet.merge!(body: params_or_body)
-      end
-
-      if !@access_token.nil? && @access_token != ''
-        packet[:headers].merge!('Authorization' => "Bearer #{@access_token}")
-      end
-
-      # puts "\033[31m [Spotify] HTTP Request: #{verb.upcase} #{BASE_URI}#{path} #{packet[:headers].inspect} \e[0m"
-      response = @connection.request(packet)
-      ::JSON.load(response.body)
-
-    rescue Excon::Errors::NotFound => exception
-      raise(ResourceNotFound, "Error: #{exception.message}")
-    rescue Excon::Errors::BadRequest => exception
-      raise(BadRequest, "Error: #{exception.message}")
-    rescue Excon::Errors::Forbidden => exception
-      raise(InsufficientClientScopeError, "Error: #{exception.message}")
-    rescue Excon::Errors::Unauthorized => exception
-      raise(AuthenticationError, "Error: #{exception.message}")
-    rescue Excon::Errors::Error => exception
-      # Catch all others errors. Samples:
-      #
-      # <Excon::Errors::SocketError: Connection refused - connect(2) (Errno::ECONNREFUSED)>
-      # <Excon::Errors::InternalServerError: Expected([200, 204, 404]) <=> Actual(500 InternalServerError)>
-      # <Excon::Errors::Timeout: read timeout reached>
-      # <Excon::Errors::BadGateway: Expected([200]) <=> Actual(502 Bad Gateway)>
-      raise(HTTPError, "Error: #{exception.message}")
     end
   end
 end
